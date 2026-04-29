@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+    branches: [main, master, dev]
+
+jobs:
+  build-make:
+    name: Build (Make)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Build with Make
+        run: make
+
+      - name: Check binary exists
+        run: test -f nanotekspice
+
+      - name: Clean
+        run: make fclean
+
+      - name: Verify clean
+        run: |
+          test ! -f nanotekspice
+          find src -name '*.o' | grep -q . && exit 1 || true
+
+  build-cmake:
+    name: Build (CMake)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Check binary exists
+        run: test -f build/nanotekspice
+
+  warnings:
+    name: Compile warnings check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Build with -Werror
+        run: make CXXFLAGS="-Wall -Wextra -Werror -std=c++20 -Iinclude -Iinclude/Components -Iinclude/Components/Core -Iinclude/Components/Exception -Iinclude/Components/Operators -Iinclude/Components/IO -Iinclude/Components/Chipset -Iinclude/Parser -Iinclude/Circuit"
+
+  memory-check:
+    name: Memory check (Valgrind)
+    runs-on: ubuntu-latest
+    needs: build-make
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang valgrind
+
+      - name: Build with debug symbols
+        run: make CXXFLAGS="-Wall -Wextra -std=c++20 -g -Iinclude -Iinclude/Components -Iinclude/Components/Core -Iinclude/Components/Exception -Iinclude/Components/Operators -Iinclude/Components/IO -Iinclude/Components/Chipset -Iinclude/Parser -Iinclude/Circuit"
+
+      - name: Create valid test file
+        run: |
+          cat > /tmp/test_valid.nts << 'EOF'
+          .chipsets:
+          input a
+          output s
+          .links:
+          a:1 s:1
+          EOF
+
+      - name: Run Valgrind
+        run: |
+          echo "display" | timeout 5 valgrind --leak-check=full --error-exitcode=42 ./nanotekspice /tmp/test_valid.nts || code=$?
+          if [ "${code:-0}" -eq 42 ]; then
+            echo "::error::Memory leaks detected"
+            exit 1
+          fi
+
+  unit-tests:
+    name: Unit tests (Criterion)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libcriterion-dev
+
+      - name: Run unit tests
+        run: make tests_run
